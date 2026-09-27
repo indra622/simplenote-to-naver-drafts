@@ -4,8 +4,8 @@
 naver_blog_id = ""
 timezone = "Asia/Seoul"
 
-# Daily source: "threads" or "simplenote".
-source = "threads"
+# Daily source: "simplenote" (primary) or "threads".
+source = "simplenote"
 
 # Browser stays visible by default because Naver can occasionally require login.
 headless = false
@@ -16,8 +16,8 @@ include_reposts = false
 max_posts_per_run = 20
 
 # Simplenote uses Automattic's official read-only local MCP server.
-# Add the `naver` tag to notes that are ready for the daily queue.
-simplenote_tag = "naver"
+# Any of these tags can queue a note for Naver draft creation.
+simplenote_tags = ["naver"]
 # Optional creation-date cutoff in the configured timezone. Empty means no cutoff.
 simplenote_start_date = ""
 simplenote_provider = "local"

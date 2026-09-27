@@ -79,17 +79,21 @@ def run_simplenote(
     dry_run: bool = False,
     limit: int | None = None,
 ) -> int:
-    """Create drafts from pending Simplenote notes carrying the queue tag."""
+    """Create drafts from pending Simplenote notes carrying a queue tag."""
     config.ensure_directories()
     effective_limit = limit or config.simplenote_max_notes_per_run
     with SimplenoteMCPClient(
         config.simplenote_mcp_command,
         config.simplenote_store_path,
     ) as client:
-        notes = client.list_tagged_notes(
-            config.simplenote_tag,
-            limit=config.simplenote_scan_limit,
-        )
+        notes_by_id = {}
+        for tag in config.simplenote_queue_tags:
+            for note in client.list_tagged_notes(
+                tag,
+                limit=config.simplenote_scan_limit,
+            ):
+                notes_by_id[note.id] = note
+        notes = list(notes_by_id.values())
     if config.simplenote_start_date is not None:
         notes = [
             note

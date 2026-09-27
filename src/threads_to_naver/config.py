@@ -36,6 +36,12 @@ class Config:
     simplenote_mcp_command: Path
     simplenote_scan_limit: int
     simplenote_max_notes_per_run: int
+    simplenote_tags: tuple[str, ...] = ()
+
+    @property
+    def simplenote_queue_tags(self) -> tuple[str, ...]:
+        """Return configured queue tags, preserving old single-tag configs."""
+        return self.simplenote_tags or (self.simplenote_tag,)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Config:
@@ -55,7 +61,7 @@ class Config:
             if footer_image_value
             else None
         )
-        source = str(raw.get("source", "threads")).strip().lower()
+        source = str(raw.get("source", "simplenote")).strip().lower()
         if source not in {"threads", "simplenote"}:
             raise ValueError("source must be either 'threads' or 'simplenote'.")
         simplenote_store_value = str(
@@ -91,6 +97,20 @@ class Config:
         simplenote_mcp_command = Path(simplenote_command_value).expanduser()
         if not simplenote_mcp_command.is_absolute():
             simplenote_mcp_command = project_dir / simplenote_mcp_command
+        raw_tags = raw.get("simplenote_tags")
+        if raw_tags is None:
+            legacy_tag = str(raw.get("simplenote_tag", "naver")).strip()
+            simplenote_tags = (legacy_tag,) if legacy_tag else ()
+        else:
+            if not isinstance(raw_tags, list) or not all(
+                isinstance(tag, str) for tag in raw_tags
+            ):
+                raise ValueError("simplenote_tags must be an array of strings.")
+            simplenote_tags = tuple(
+                dict.fromkeys(tag.strip() for tag in raw_tags if tag.strip())
+            )
+        if not simplenote_tags:
+            raise ValueError("Configure at least one non-empty Simplenote queue tag.")
         return cls(
             project_dir=project_dir,
             naver_blog_id=str(raw.get("naver_blog_id", "")).strip(),
@@ -112,7 +132,7 @@ class Config:
             artifacts_dir=project_dir / "artifacts",
             state_db=data_dir / "state.sqlite3",
             source=source,
-            simplenote_tag=str(raw.get("simplenote_tag", "naver")).strip(),
+            simplenote_tag=simplenote_tags[0],
             simplenote_start_date=simplenote_start_date,
             simplenote_provider=simplenote_provider,
             simplenote_store_path=(
@@ -127,6 +147,7 @@ class Config:
             simplenote_max_notes_per_run=max(
                 1, int(raw.get("simplenote_max_notes_per_run", 2))
             ),
+            simplenote_tags=simplenote_tags,
         )
 
     def ensure_directories(self) -> None:

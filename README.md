@@ -1,12 +1,12 @@
-# Threads / Simplenote → Naver Blog drafts
+# Simplenote → Naver Blog drafts
 
-Threads 게시물 또는 Simplenote 작업 노트를 네이버 블로그의 **임시저장 초안**으로 옮기는 macOS용 자동화 도구입니다. Simplenote는 Automattic의 공식 `simplenote-mcp`를 사용합니다.
+Simplenote 작업 노트를 네이버 블로그의 **임시저장 초안**으로 옮기는 macOS용 자동화 도구입니다. Threads 게시물 가져오기도 보조 기능으로 지원하며, Simplenote는 Automattic의 공식 `simplenote-mcp`를 사용합니다.
 
 - LLM을 사용하지 않습니다.
 - 네이버 글을 자동 발행하지 않습니다.
 - 게시물 1개를 네이버 초안 1개로 저장합니다.
 - 답글과 리포스트는 기본적으로 제외합니다.
-- Simplenote에서는 설정한 태그(`naver` 기본값)가 붙은 노트만 큐로 읽습니다.
+- Simplenote에서는 설정한 태그 중 하나 이상이 붙은 노트만 큐로 읽습니다. `simplenote_tags`를 권장하며 기존 `simplenote_tag` 단일 설정도 계속 지원합니다.
 - Simplenote의 첫 줄은 제목, 나머지 줄은 본문으로 사용합니다.
 - 이미지, 캐러셀, 동영상을 함께 옮깁니다.
 - 설정한 footer 링크와 이미지를 모든 새 초안의 맨 아래에 추가할 수 있습니다.
@@ -16,7 +16,7 @@ Threads 게시물 또는 Simplenote 작업 노트를 네이버 블로그의 **�
 
 ## 안전장치
 
-- 본문은 Threads 원문을 그대로 입력합니다.
+- Threads 원문과 Simplenote 본문을 LLM으로 다시 쓰지 않습니다.
 - Simplenote 원본은 읽기 전용이며 노트의 태그나 내용을 수정하지 않습니다.
 - 제목은 첫 번째 비어 있지 않은 줄의 앞 100자를 기계적으로 사용합니다. 첫 줄이 `직접 쓰는 AI교양`이면 원문 작성일을 붙여 `직접 쓰는 AI교양 – YYYY.MM.DD`로 저장합니다.
 - 상단의 `저장` 또는 `임시저장`으로 확인된 컨트롤만 클릭합니다.
@@ -33,14 +33,14 @@ Threads 게시물 또는 Simplenote 작업 노트를 네이버 블로그의 **�
 - Node.js 22 이상
 - Simplenote macOS 앱의 로컬 저장소 또는 공식 MCP API 로그인
 - [uv](https://docs.astral.sh/uv/)
-- 자신의 게시물을 읽을 수 있는 Threads API 사용자 액세스 토큰
+- Threads를 소스로 사용할 경우 자신의 게시물을 읽을 수 있는 Threads API 사용자 액세스 토큰
 - 네이버 블로그 계정
 
 ## 설치
 
 ```bash
-git clone https://github.com/indra622/threads-to-naver-drafts.git
-cd threads-to-naver-drafts
+git clone https://github.com/indra622/simplenote-to-naver-drafts.git
+cd simplenote-to-naver-drafts
 
 cp config.example.toml config.toml
 uv sync --extra dev
@@ -53,12 +53,12 @@ npm install
 ```toml
 naver_blog_id = ""
 timezone = "Asia/Seoul"
-source = "threads"
+source = "simplenote"
 headless = false
 include_replies = false
 include_reposts = false
 max_posts_per_run = 20
-simplenote_tag = "naver"
+simplenote_tags = ["naver"]
 simplenote_start_date = ""
 simplenote_provider = "local"
 simplenote_store_path = "~/Library/Group Containers/PZYM8XX95Q.com.automattic.SimplenoteMac/Data/Simplenote.storedata"
@@ -127,7 +127,7 @@ uv run threads-to-naver daily --dry-run
 uv run threads-to-naver daily
 ```
 
-`source = "threads"`이면 전날 Threads 게시물을, `source = "simplenote"`이면 태그 큐를 처리합니다.
+`source = "simplenote"`이면 Simplenote 태그 큐를, `source = "threads"`이면 전날 Threads 게시물을 처리합니다.
 
 ### 1. 먼저 dry-run
 

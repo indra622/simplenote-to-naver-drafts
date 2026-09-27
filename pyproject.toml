@@ -1,7 +1,7 @@
 [project]
 name = "threads-to-naver-drafts"
 version = "0.1.0"
-description = "Copy Threads posts or queued Simplenote notes into private Naver Blog drafts."
+description = "Copy queued Simplenote notes or Threads posts into private Naver Blog drafts."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
