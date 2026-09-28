@@ -123,7 +123,12 @@ class NaverDraftWriter:
         paths = list(media_paths)
         if paths:
             self._upload_media(page, paths, post_title)
-        self._append_configured_footer(page)
+        body_text = _editor_text_body_text(page)
+        if body_text.strip("\n") != post.text.strip("\n"):
+            raise RuntimeError(
+                "The Naver body differs from the source text; no draft was saved."
+            )
+        self._append_configured_footer(page, body_focused=not paths)
 
         draft_button = _find_safe_draft_button(page)
         draft_button.click()
@@ -182,41 +187,86 @@ class NaverDraftWriter:
     ) -> bool:
         page = self._prepare_editor()
         self._load_temp_draft(page, log_no)
-        footer_text_exists = footer_url in _editor_body_text(page)
-        footer_link_exists = _footer_link_count(page, footer_url) > 0
-        if footer_text_exists and footer_link_exists:
-            return False
-        if footer_text_exists:
-            _make_text_link(page, footer_url)
-            draft_button = _find_safe_draft_button(page)
-            draft_button.click()
-            page.wait_for_timeout(5_000)
-            if _footer_link_count(page, footer_url) == 0:
-                raise RuntimeError(
-                    f"Naver draft {log_no} did not retain the clickable footer link."
-                )
-            if save_artifact:
-                self._save_artifact(page, log_no, "footer-saved")
-            return True
-
+        # Reopened editor cards expose preview metadata, but no target URL. The
+        # draft read response has no verified target field in this integration.
+        # Treat any existing card as ambiguous rather than claim idempotency.
+        if _visible_og_cards(page):
+            raise RuntimeError(
+                "An existing Naver OG card has an unverifiable target; "
+                "no draft was saved."
+            )
+        original_text = _editor_text_body_text(page)
         before_images = _visible_image_count(page)
-        self._append_footer(page, footer_url, footer_image_path)
+        if footer_url in original_text:
+            existing_guide_count = _visible_footer_guide_image_count(
+                page, footer_image_path
+            )
+            if existing_guide_count > 1:
+                raise RuntimeError(
+                    "The legacy Naver draft has duplicate guide images; no draft was saved."
+                )
+            legacy_images_after = _visible_images_after_footer(page, footer_url)
+            if legacy_images_after > 1:
+                raise RuntimeError(
+                    "The legacy Naver footer has ambiguous guide images; no draft was saved."
+                )
+            original_text = _remove_standalone_legacy_footer(page, footer_url)
+            card, metadata = _insert_footer_og_card(page, footer_url)
+            _verify_footer_card(page, original_text, card, metadata, footer_url)
+            if existing_guide_count:
+                if (
+                    _visible_footer_guide_images_after_card(card, footer_image_path)
+                    != 1
+                ):
+                    raise RuntimeError(
+                        "The legacy Naver guide image is not after the OG card; "
+                        "no draft was saved."
+                    )
+            else:
+                if not footer_image_path.is_file():
+                    raise FileNotFoundError(f"Missing footer image: {footer_image_path}")
+                self._upload_media(page, [footer_image_path], "footer")
+                if _visible_image_count(page) != before_images + 1:
+                    raise RuntimeError(
+                        "Could not verify the Naver footer guide image; no draft was saved."
+                    )
+                if (
+                    _visible_footer_guide_images_after_card(card, footer_image_path)
+                    != 1
+                ):
+                    raise RuntimeError(
+                        "The Naver footer guide image is not after its OG card; "
+                        "no draft was saved."
+                    )
+            _verify_footer_card(
+                page,
+                original_text,
+                card,
+                metadata,
+                footer_url,
+                require_image=True,
+                footer_image_path=footer_image_path,
+            )
+        else:
+            card, metadata = self._append_footer(page, footer_url, footer_image_path)
         draft_button = _find_safe_draft_button(page)
         draft_button.click()
         page.wait_for_timeout(5_000)
-
-        if footer_url not in _editor_body_text(page):
-            raise RuntimeError(
-                f"Naver draft {log_no} did not retain the configured footer URL."
-            )
-        if _footer_link_count(page, footer_url) == 0:
-            raise RuntimeError(
-                f"Naver draft {log_no} did not retain the clickable footer link."
-            )
-        if _visible_image_count(page) <= before_images:
+        if len(_visible_og_cards(page)) != 1:
+            raise RuntimeError(f"Naver draft {log_no} did not retain its footer OG card.")
+        if _visible_image_count(page) < before_images:
             raise RuntimeError(
                 f"Naver draft {log_no} did not retain the configured footer image."
             )
+        _verify_footer_card(
+            page,
+            original_text,
+            card,
+            metadata,
+            footer_url,
+            require_image=True,
+            footer_image_path=footer_image_path,
+        )
         if save_artifact:
             self._save_artifact(page, log_no, "footer-saved")
         return True
@@ -237,7 +287,7 @@ class NaverDraftWriter:
             chooser_info.value.set_files(str(path))
             page.wait_for_timeout(2_000)
 
-    def _append_configured_footer(self, page: Page) -> None:
+    def _append_configured_footer(self, page: Page, *, body_focused: bool = False) -> None:
         if not self._config.footer_url and self._config.footer_image_path is None:
             return
         if not self._config.footer_url or self._config.footer_image_path is None:
@@ -248,31 +298,75 @@ class NaverDraftWriter:
             page,
             self._config.footer_url,
             self._config.footer_image_path,
+            body_focused=body_focused,
         )
 
     def _append_footer(
-        self, page: Page, footer_url: str, footer_image_path: Path
-    ) -> None:
+        self,
+        page: Page,
+        footer_url: str,
+        footer_image_path: Path,
+        *,
+        body_focused: bool = False,
+    ) -> tuple[Locator, tuple[str, str, str]]:
         if not footer_image_path.is_file():
             raise FileNotFoundError(f"Missing footer image: {footer_image_path}")
+        original_text = _editor_text_body_text(page)
+        if footer_url in original_text:
+            raise RuntimeError("The Naver body already contains the footer URL.")
+        if _visible_og_cards(page):
+            raise RuntimeError(
+                "An existing Naver OG card has an unverifiable target; "
+                "no draft was saved."
+            )
+        existing_guide_count = _visible_footer_guide_image_count(
+            page, footer_image_path
+        )
+        if existing_guide_count > 1:
+            raise RuntimeError(
+                "The Naver draft has duplicate guide images; no draft was saved."
+            )
+        before_images = _visible_image_count(page)
         paragraph = _find_or_create_footer_paragraph(page)
         if _editor_text_body_text(page).strip():
             if _paragraph_is_in_list(paragraph):
-                _insert_text_link_after_list(page, paragraph, footer_url)
+                _exit_list_at_end(page, paragraph)
             else:
-                _place_caret_at_end(paragraph)
-                page.keyboard.press("Shift+Enter")
-                page.keyboard.press("Shift+Enter")
-                _insert_text_link_at_cursor(page, footer_url)
+                _place_caret_at_end(paragraph, body_focused=body_focused)
         else:
-            paragraph.click()
+            _place_caret_at_end(paragraph, body_focused=body_focused)
             page.keyboard.insert_text(".")
             page.keyboard.press("Backspace")
-            _insert_text_link_at_cursor(page, footer_url)
-        paragraph = _find_paragraph_containing(page, footer_url)
-        _place_caret_at_end(paragraph)
-        page.keyboard.press("Shift+Enter")
-        self._upload_media(page, [footer_image_path], "footer")
+        card, metadata = _insert_footer_og_card(page, footer_url)
+        _verify_footer_card(page, original_text, card, metadata, footer_url)
+        if existing_guide_count:
+            if _visible_footer_guide_images_after_card(card, footer_image_path) != 1:
+                raise RuntimeError(
+                    "The existing Naver footer guide image is not after its OG card; "
+                    "no draft was saved."
+                )
+        else:
+            self._upload_media(page, [footer_image_path], "footer")
+            if _visible_image_count(page) != before_images + 1:
+                raise RuntimeError(
+                    "Could not verify the Naver footer guide image; "
+                    "no draft was saved."
+                )
+            if _visible_footer_guide_images_after_card(card, footer_image_path) != 1:
+                raise RuntimeError(
+                    "The Naver footer guide image is not after its OG card; "
+                    "no draft was saved."
+                )
+        _verify_footer_card(
+            page,
+            original_text,
+            card,
+            metadata,
+            footer_url,
+            require_image=True,
+            footer_image_path=footer_image_path,
+        )
+        return card, metadata
 
     def _prepare_editor(self) -> Page:
         page = self._open_editor()
@@ -391,8 +485,8 @@ class NaverDraftWriter:
         )
 
 
-def _candidate_frames(page: Page) -> list[Page | Frame]:
-    return [page, *page.frames]
+def _candidate_frames(page: Page) -> list[Frame]:
+    return list(page.frames)
 
 
 def _find_visible(page: Page, selectors: tuple[str, ...], description: str) -> Locator:
@@ -529,18 +623,250 @@ def _editor_text_body_text(page: Page) -> str:
     parts: list[str] = []
     for frame in _candidate_frames(page):
         sections = frame.locator(".se-section-text")
-        for index in range(min(sections.count(), 100)):
+        for index in range(sections.count()):
             section = sections.nth(index)
             if section.is_visible():
                 parts.append(section.inner_text() or "")
     return "\n".join(parts)
 
 
+def _visible_og_cards(page: Page) -> list[Locator]:
+    cards: list[Locator] = []
+    for frame in _candidate_frames(page):
+        candidates = frame.locator(".se-component.se-oglink")
+        for index in range(candidates.count()):
+            card = candidates.nth(index)
+            if card.is_visible():
+                cards.append(card)
+    return cards
+
+
+def _og_visible_fields(container: Locator) -> list[str]:
+    return container.evaluate(
+        """root => [...root.querySelectorAll('*')]
+          .filter(element => element.getClientRects().length
+            && !element.closest('button')
+            && ![...element.children].some(child => child.innerText?.trim()))
+          .map(element => element.innerText?.trim())
+          .filter(Boolean)"""
+    )
+
+
+def _visible_images_after_footer_card(card: Locator) -> int:
+    images = card.locator("xpath=following::img").filter(visible=True)
+    return sum(
+        images.nth(index).evaluate(
+            "image => Boolean(image.closest('.se-component-content') "
+            "&& !image.closest('.se-oglink'))"
+        )
+        for index in range(images.count())
+    )
+
+
+def _visible_footer_guide_image_count(page: Page, image_path: Path) -> int:
+    return sum(
+        1
+        for frame in _candidate_frames(page)
+        for index in range(
+            frame.locator(".se-component.se-image img").count()
+        )
+        if frame.locator(".se-component.se-image img").nth(index).is_visible()
+        and image_path.name
+        in (frame.locator(".se-component.se-image img").nth(index).get_attribute("src") or "")
+    )
+
+
+def _visible_footer_guide_images_after_card(
+    card: Locator, image_path: Path
+) -> int:
+    images = card.locator("xpath=following::img").filter(visible=True)
+    return sum(
+        image_path.name in (images.nth(index).get_attribute("src") or "")
+        and bool(
+            images.nth(index).evaluate(
+                "image => image.closest('.se-component.se-image')"
+            )
+        )
+        for index in range(images.count())
+    )
+
+
+def _verify_footer_card(
+    page: Page,
+    original_text: str,
+    card: Locator,
+    metadata: tuple[str, str, str],
+    url: str,
+    *,
+    require_image: bool = False,
+    footer_image_path: Path | None = None,
+) -> None:
+    body = _editor_text_body_text(page)
+    if body.strip("\n") != original_text.strip("\n") or url in body:
+        raise RuntimeError(
+            "The Naver footer changed the original body; no draft was saved."
+        )
+    if (
+        len(_visible_og_cards(page)) != 1
+        or not card.is_visible()
+        or "se-l-large_image" not in (card.get_attribute("class") or "").split()
+        or card.locator(".se-section-oglink .se-module-oglink").count() != 1
+        or _og_visible_fields(card.locator(".se-module-oglink")) != list(metadata)
+    ):
+        raise RuntimeError(
+            "Could not verify the Naver footer OG preview; no draft was saved."
+        )
+    if not card.evaluate(
+        """card => [...card.ownerDocument.querySelectorAll('.se-section-text')]
+          .filter(section => section.getClientRects().length && section.innerText.trim())
+          .every(section => Boolean(section.compareDocumentPosition(card) & 4))"""
+    ):
+        raise RuntimeError(
+            "The Naver footer OG card is before the body; no draft was saved."
+        )
+    if require_image and (
+        footer_image_path is None
+        or _visible_footer_guide_images_after_card(card, footer_image_path) != 1
+    ):
+        raise RuntimeError(
+            "The Naver footer guide image is not after its OG card; no draft was saved."
+        )
+
+
+def _insert_footer_og_card(
+    page: Page, url: str
+) -> tuple[Locator, tuple[str, str, str]]:
+    before_count = len(_visible_og_cards(page))
+    toolbar = _wait_for_visible(
+        page, ('button[data-name="oglink"]',), "OG link toolbar button"
+    )
+    toolbar.click()
+    popup = _wait_for_visible(page, (".se-popup-oglink",), "OG link popup")
+    url_input = popup.locator('input.se-popup-oglink-input[placeholder="URL을 입력하세요."]')
+    if url_input.count() != 1 or not url_input.is_visible():
+        raise RuntimeError("Could not find the Naver OG link URL input; no draft was saved.")
+    url_input.fill(url)
+    search = popup.locator('button[data-log="pog.search"]')
+    if search.count() != 1 or not search.is_enabled():
+        raise RuntimeError("Could not search the Naver OG link; no draft was saved.")
+    search.click()
+    confirm = popup.locator('button[data-log="pog.ok"]')
+    metadata: tuple[str, str, str] | None = None
+    for _ in range(50):
+        previews = popup.locator("img").filter(visible=True)
+        if (
+            previews.count() == 1
+            and previews.first.evaluate("image => image.complete && image.naturalWidth > 0")
+            and confirm.count() == 1
+            and confirm.is_enabled()
+        ):
+            fields = previews.first.evaluate(
+                """image => {
+                  const popup = image.closest('.se-popup-oglink');
+                  for (let node = image.parentElement; node && node !== popup;
+                       node = node.parentElement) {
+                    const fields = [...node.querySelectorAll('*')]
+                      .filter(element => element.getClientRects().length
+                        && !element.closest('button')
+                        && ![...element.children].some(child => child.innerText?.trim()))
+                      .map(element => element.innerText?.trim()).filter(Boolean);
+                    if (fields.length >= 3) return fields;
+                  }
+                  return [];
+                }"""
+            )
+            if len(fields) == 3 and fields[2] == urlsplit(url).hostname:
+                metadata = tuple(fields)
+                break
+        page.wait_for_timeout(100)
+    else:
+        raise RuntimeError(
+            "Naver did not provide a complete OG preview; no draft was saved."
+        )
+    if metadata is None or url_input.input_value() != url:
+        raise RuntimeError("The Naver OG preview URL changed; no draft was saved.")
+    confirm.click()
+    for _ in range(50):
+        cards = _visible_og_cards(page)
+        if len(cards) == before_count + 1:
+            added = cards[-1]
+            # The editor component has no target attribute. The retained modal
+            # input proves the URL at confirm; the added card must match its preview.
+            if (
+                "se-l-large_image" in (added.get_attribute("class") or "").split()
+                and _og_visible_fields(added.locator(".se-module-oglink"))
+                == list(metadata)
+            ):
+                return added, metadata
+        page.wait_for_timeout(100)
+    raise RuntimeError("Naver did not insert the matching footer OG card; no draft was saved.")
+
+
+def _remove_standalone_legacy_footer(page: Page, url: str) -> str:
+    body = _editor_text_body_text(page)
+    before, separator, after = body.partition(url)
+    _verify_footer_after_body(page, before, url)
+    if not separator or after.strip("\n"):
+        raise RuntimeError("The legacy Naver footer is not standalone; no draft was saved.")
+    paragraphs = [
+        paragraph
+        for frame in _candidate_frames(page)
+        for paragraph in (
+            frame.locator(".se-section-text .se-text-paragraph").nth(index)
+            for index in range(frame.locator(".se-section-text .se-text-paragraph").count())
+        )
+        if paragraph.is_visible() and url in (paragraph.inner_text() or "")
+    ]
+    if len(paragraphs) != 1 or (paragraphs[0].inner_text() or "") != url:
+        raise RuntimeError("The legacy Naver footer is not standalone; no draft was saved.")
+    paragraph = paragraphs[0]
+    links = paragraph.locator(".se-link").filter(visible=True)
+    if links.count() != 1 or (links.first.inner_text() or "") != url:
+        raise RuntimeError(
+            "Could not identify the exact legacy footer link; no draft was saved."
+        )
+    link = links.first
+    box = link.bounding_box()
+    if not box or box["width"] < 4:
+        raise RuntimeError("Could not focus the legacy footer link; no draft was saved.")
+    link.click(position={"x": box["width"] - 2, "y": box["height"] / 2})
+    for _ in url:
+        page.keyboard.press("Backspace")
+    if _editor_text_body_text(page).strip("\n") != before.strip("\n"):
+        raise RuntimeError("Removing the legacy footer changed the body; no draft was saved.")
+    return before
+
+
+def _verify_footer_after_body(page: Page, original_text: str, url: str) -> None:
+    body = _editor_text_body_text(page)
+    before, separator, after = body.partition(url)
+    if (
+        not separator
+        or body.count(url) != 1
+        or before.strip("\n") != original_text.strip("\n")
+        or after.strip("\n")
+    ):
+        raise RuntimeError(
+            "The Naver footer split or changed the original body; no draft was saved."
+        )
+
+
+def _visible_images_after_footer(page: Page, url: str) -> int:
+    paragraph = _find_paragraph_containing(page, url)
+    images = paragraph.locator("xpath=following::img").filter(visible=True)
+    return sum(
+        images.nth(index).evaluate(
+            "image => Boolean(image.closest('.se-component-content'))"
+        )
+        for index in range(images.count())
+    )
+
+
 def _find_paragraph_containing(page: Page, text: str) -> Locator:
     match: Locator | None = None
     for frame in _candidate_frames(page):
         paragraphs = frame.locator(".se-text-paragraph")
-        for index in range(min(paragraphs.count(), 500)):
+        for index in range(paragraphs.count()):
             paragraph = paragraphs.nth(index)
             if paragraph.is_visible() and text in (paragraph.inner_text() or ""):
                 match = paragraph
@@ -619,7 +945,7 @@ def _find_last_visible_text_paragraph(page: Page) -> Locator:
     visible: list[Locator] = []
     for frame in _candidate_frames(page):
         paragraphs = frame.locator(".se-section-text .se-text-paragraph")
-        for index in range(min(paragraphs.count(), 500)):
+        for index in range(paragraphs.count()):
             paragraph = paragraphs.nth(index)
             if paragraph.is_visible():
                 visible.append(paragraph)
@@ -652,20 +978,66 @@ def _find_or_create_footer_paragraph(page: Page) -> Locator:
         )
 
 
-def _place_caret_at_end(paragraph: Locator) -> None:
-    paragraph.scroll_into_view_if_needed()
-    paragraph.click()
-    paragraph.evaluate(
-        """
-        element => {
-          const range = element.ownerDocument.createRange();
-          range.selectNodeContents(element);
-          range.collapse(false);
-          const selection = element.ownerDocument.getSelection();
-          selection.removeAllRanges();
-          selection.addRange(range);
-        }
-        """
+def _place_caret_at_end(paragraph: Locator, *, body_focused: bool = False) -> None:
+    if not _editor_body_has_focus(paragraph, allow_input_buffer=body_focused):
+        paragraph.scroll_into_view_if_needed()
+        position = paragraph.evaluate(
+            """element => {
+              const doc = element.ownerDocument;
+              const range = doc.createRange();
+              range.selectNodeContents(element);
+              const box = element.getBoundingClientRect();
+              for (const rect of [...range.getClientRects(), box]) {
+                if (!rect.width || !rect.height) continue;
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
+                const hit = doc.elementFromPoint(x, y);
+                if (hit && element.contains(hit)
+                    && !hit.closest('.se-selection, .se-caret')) {
+                  return {x: x - box.left - element.clientLeft,
+                          y: y - box.top - element.clientTop};
+                }
+              }
+              return null;
+            }"""
+        )
+        if position is None:
+            raise RuntimeError("Could not focus the Naver body without an overlay.")
+        paragraph.click(position=position)
+        body_focused = False
+    if not _editor_body_has_focus(paragraph, allow_input_buffer=body_focused):
+        raise RuntimeError("Could not confirm Naver body focus; no draft was saved.")
+    paragraph.page.keyboard.press("ControlOrMeta+End")
+
+
+def _editor_body_has_focus(paragraph: Locator, *, allow_input_buffer: bool) -> bool:
+    return paragraph.evaluate(
+        """(element, allowInputBuffer) => {
+          const doc = element.ownerDocument;
+          if (!doc.hasFocus()) return false;
+          const active = doc.activeElement;
+          const anchor = doc.getSelection()?.anchorNode;
+          const anchorElement = anchor?.nodeType === 1 ? anchor : anchor?.parentElement;
+          const section = element.closest('.se-section-text');
+          if (!section) return false;
+          const selectionInParagraph = Boolean(anchorElement
+            && element.contains(anchorElement)
+            && anchorElement.closest('.se-section-text') === section);
+          if (active?.tagName === 'IFRAME') {
+            if (![active.id, active.name].some(value => value?.startsWith('input_buffer'))) {
+              return false;
+            }
+            const bufferDoc = active.contentDocument;
+            const bufferBody = bufferDoc?.body;
+            // The buffer BODY has no id and cannot contain nodes from the parent document.
+            return Boolean(bufferBody?.isContentEditable
+              && bufferDoc.activeElement === bufferBody
+              && (allowInputBuffer || selectionInParagraph));
+          }
+          return Boolean(active?.isContentEditable && active.contains(element)
+            && selectionInParagraph);
+        }""",
+        allow_input_buffer,
     )
 
 
@@ -673,29 +1045,15 @@ def _paragraph_is_in_list(paragraph: Locator) -> bool:
     return paragraph.locator("xpath=ancestor::li").count() > 0
 
 
-def _click_at_visual_text_end(paragraph: Locator) -> None:
-    nodes = paragraph.locator("span.__se-node")
-    for index in range(nodes.count() - 1, -1, -1):
-        node = nodes.nth(index)
-        if not node.is_visible():
-            continue
-        box = node.bounding_box()
-        if box is None:
-            continue
-        node.click(
-            position={
-                "x": max(1, box["width"] - 1),
-                "y": max(1, box["height"] / 2),
-            }
-        )
-        return
-    raise RuntimeError("Could not focus the end of the Naver list item.")
-
-
 def _insert_text_link_after_list(page: Page, paragraph: Locator, url: str) -> None:
+    _exit_list_at_end(page, paragraph)
+    _insert_text_link_at_cursor(page, url)
+
+
+def _exit_list_at_end(page: Page, paragraph: Locator) -> None:
     original_text = paragraph.inner_text() or ""
     section = paragraph.locator("xpath=ancestor::div[contains(@class,'se-section-text')]")
-    _click_at_visual_text_end(paragraph)
+    _place_caret_at_end(paragraph)
     page.keyboard.press("Enter")
     page.wait_for_timeout(300)
     page.keyboard.press("Enter")
@@ -721,7 +1079,6 @@ def _insert_text_link_after_list(page: Page, paragraph: Locator, url: str) -> No
     tail.click()
     page.keyboard.insert_text(".")
     page.keyboard.press("Backspace")
-    _insert_text_link_at_cursor(page, url)
 
 
 def _visible_image_count(page: Page) -> int:
@@ -730,7 +1087,10 @@ def _visible_image_count(page: Page) -> int:
         images = frame.locator(".se-component-content img")
         count += sum(
             images.nth(index).is_visible()
-            for index in range(min(images.count(), 500))
+            and not images.nth(index).evaluate(
+                "image => Boolean(image.closest('.se-oglink'))"
+            )
+            for index in range(images.count())
         )
     return count
 
