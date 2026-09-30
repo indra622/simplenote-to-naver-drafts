@@ -521,11 +521,29 @@ def _wait_for_visible(
 
 def _insert_verbatim(page: Page, text: str) -> None:
     lines = text.split("\n")
+    inserted = ""
     for index, line in enumerate(lines):
         if line:
             page.keyboard.insert_text(line)
+            inserted += line
+            _wait_for_editor_text(page, inserted)
         if index < len(lines) - 1:
             page.keyboard.press("Shift+Enter")
+            inserted += "\n"
+            _wait_for_editor_text(page, inserted, line_break=True)
+
+
+def _wait_for_editor_text(page: Page, expected: str, *, line_break: bool = False) -> None:
+    for _ in range(50):
+        actual = _editor_text_body_text(page)
+        if actual == expected or (
+            line_break
+            and actual.startswith(expected)
+            and not actual[len(expected):].strip("\n")
+        ):
+            return
+        page.wait_for_timeout(100)
+    raise RuntimeError("The Naver body differs from the source text; no draft was saved.")
 
 
 def _is_safe_draft_label(label: str) -> bool:
@@ -626,7 +644,24 @@ def _editor_text_body_text(page: Page) -> str:
         for index in range(sections.count()):
             section = sections.nth(index)
             if section.is_visible():
-                parts.append(section.inner_text() or "")
+                paragraphs = section.locator(".se-text-paragraph")
+                if not paragraphs.count():
+                    parts.append(section.inner_text() or "")
+                    continue
+                lines = []
+                for paragraph_index in range(paragraphs.count()):
+                    paragraph = paragraphs.nth(paragraph_index)
+                    only_placeholder = paragraph.evaluate(
+                        """element => {
+                          const placeholder = element.querySelector('.se-placeholder');
+                          if (!placeholder) return false;
+                          const copy = element.cloneNode(true);
+                          copy.querySelector('.se-placeholder').remove();
+                          return !copy.textContent && !copy.querySelector('br');
+                        }"""
+                    )
+                    lines.append("" if only_placeholder else paragraph.inner_text() or "")
+                parts.append("\n".join(lines))
     return "\n".join(parts)
 
 

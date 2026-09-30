@@ -477,6 +477,82 @@ def test_create_draft_normalizes_only_boundary_newlines(
         browser.close()
 
 
+def test_create_draft_accepts_naver_paragraph_boundaries(config, monkeypatch):
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            '<div class="se-documentTitle" contenteditable="true"></div>'
+            '<div class="se-section-text" contenteditable="true">'
+            '<p class="se-text-paragraph"><span class="se-placeholder">placeholder</span></p>'
+            '</div>'
+            '<button style="position:fixed;top:0" onclick="window.saved=true">임시저장</button>'
+        )
+        writer = NaverDraftWriter(config)
+        monkeypatch.setattr(writer, "_prepare_editor", lambda: page)
+        monkeypatch.setattr(writer, "_save_artifact", lambda *args: None)
+        monkeypatch.setattr(page, "wait_for_timeout", lambda ms: None)
+        monkeypatch.setattr(
+            naver,
+            "_insert_verbatim",
+            lambda page, text: page.locator(".se-section-text").evaluate(
+                "section => section.innerHTML = "
+                "'<p class=\"se-text-paragraph\">first</p>' + "
+                "'<p class=\"se-text-paragraph\">second</p>' + "
+                "'<p class=\"se-text-paragraph\"></p>' + "
+                "'<p class=\"se-text-paragraph\">last</p>'"
+            ),
+        )
+        post = ThreadPost(
+            "test", "first\nsecond\n\nlast", datetime.now(UTC), "", "TEXT_POST"
+        )
+
+        writer.create_draft(post, [])
+
+        assert page.evaluate("Boolean(window.saved)") is True
+        assert _editor_text_body_text(page) == post.text
+        browser.close()
+
+
+def test_insert_verbatim_waits_for_editor_updates():
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            '<div class="se-section-text" contenteditable="true">'
+            '<p class="se-text-paragraph"><span class="se-placeholder">placeholder</span></p>'
+            '</div>'
+            '<script>'
+            'const section = document.querySelector(".se-section-text");'
+            'let pending = null;'
+            'section.addEventListener("beforeinput", event => {'
+            '  if (event.inputType !== "insertText") return;'
+            '  event.preventDefault();'
+            '  const text = event.data;'
+            '  const current = section.lastElementChild;'
+            '  pending = setTimeout(() => {'
+            '    current.textContent = text; pending = null;'
+            '  }, 80);'
+            '});'
+            'section.addEventListener("keydown", event => {'
+            '  if (event.key !== "Enter" || !event.shiftKey) return;'
+            '  event.preventDefault();'
+            '  if (pending) clearTimeout(pending);'
+            '  pending = null;'
+            '  const paragraph = document.createElement("p");'
+            '  paragraph.className = "se-text-paragraph";'
+            '  section.append(paragraph);'
+            '});'
+            '</script>'
+        )
+        page.locator(".se-section-text").click()
+
+        _insert_verbatim(page, "first\nsecond")
+
+        assert _editor_text_body_text(page) == "first\nsecond"
+        browser.close()
+
+
 def test_append_footer_preserves_wrapped_body(
     config, tmp_path, monkeypatch, smarteditor_end_key
 ):
@@ -849,11 +925,14 @@ def test_verbatim_insertion_preserves_text_and_blank_lines() -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page()
-        page.set_content('<div id="body" contenteditable="true"></div>')
+        page.set_content(
+            '<div id="body" class="se-section-text" contenteditable="true">'
+            '<p class="se-text-paragraph"><br></p></div>'
+        )
         body = page.locator("#body")
         body.click()
         _insert_verbatim(page, source)
-        assert body.inner_text() == source
+        assert _editor_text_body_text(page) == source
         browser.close()
 
 
