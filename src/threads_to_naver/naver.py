@@ -99,7 +99,13 @@ class NaverDraftWriter:
             page.wait_for_timeout(1_000)
         raise RuntimeError("Timed out waiting for Naver login.")
 
-    def create_draft(self, post: ThreadPost, media_paths: Iterable[Path]) -> None:
+    def create_draft(
+        self,
+        post: ThreadPost,
+        media_paths: Iterable[Path],
+        *,
+        cover_path: Path | None = None,
+    ) -> None:
         page = self._prepare_editor()
         draft_count = _current_draft_count(page)
         if draft_count is not None and draft_count >= SAFE_DRAFT_COUNT_LIMIT:
@@ -118,6 +124,12 @@ class NaverDraftWriter:
         body.click()
         page.keyboard.press("ControlOrMeta+A")
         page.keyboard.press("Backspace")
+        if cover_path is not None:
+            if not cover_path.is_file():
+                raise FileNotFoundError(f"Missing generated cover: {cover_path}")
+            self._upload_media(page, [cover_path], post_title)
+            _verify_cover(page, cover_path, select_representative=True)
+            _find_visible(page, BODY_SELECTORS, "body editor after cover").click()
         _insert_verbatim(page, post.text)
 
         paths = list(media_paths)
@@ -129,10 +141,14 @@ class NaverDraftWriter:
                 "The Naver body differs from the source text; no draft was saved."
             )
         self._append_configured_footer(page, body_focused=not paths)
+        if cover_path is not None:
+            _verify_cover(page, cover_path, select_representative=True)
 
         draft_button = _find_safe_draft_button(page)
         draft_button.click()
         page.wait_for_timeout(5_000)
+        if cover_path is not None:
+            _verify_cover(page, cover_path)
         self._save_artifact(page, post.id, "saved")
 
     def list_temp_drafts(self) -> list[TempDraft]:
@@ -1128,6 +1144,44 @@ def _visible_image_count(page: Page) -> int:
             for index in range(images.count())
         )
     return count
+
+
+def _verify_cover(
+    page: Page, image_path: Path, *, select_representative: bool = False
+) -> None:
+    for frame in _candidate_frames(page):
+        images = frame.locator(".se-component.se-image")
+        if not images.count():
+            continue
+        cover = images.first
+        picture = cover.locator("img.se-image-resource").first
+        if not picture.count() or (
+            picture.get_attribute("alt") != image_path.name
+            and image_path.name not in (picture.get_attribute("src") or "")
+        ):
+            break
+        if not picture.evaluate("image => image.complete && image.naturalWidth > 0"):
+            break
+        if not cover.evaluate(
+            """element => ![...document.querySelectorAll('.se-component.se-text')]
+              .some(text => text.compareDocumentPosition(element) &
+                Node.DOCUMENT_POSITION_FOLLOWING && text.innerText.trim())"""
+        ):
+            break
+        representative = cover.locator(".se-set-rep-image-button").first
+        if not representative.count():
+            break
+        if select_representative and "se-is-selected" not in (
+            representative.get_attribute("class") or ""
+        ).split():
+            representative.click()
+        if "se-is-selected" in (representative.get_attribute("class") or "").split():
+            return
+        break
+    raise RuntimeError(
+        "Could not verify the first Naver image as the representative cover; "
+        "the source item remains pending."
+    )
 
 
 def _upload_video(page: Page, path: Path, title: str) -> None:

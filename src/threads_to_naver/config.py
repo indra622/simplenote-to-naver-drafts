@@ -37,6 +37,7 @@ class Config:
     simplenote_scan_limit: int
     simplenote_max_notes_per_run: int
     simplenote_tags: tuple[str, ...] = ()
+    require_generated_cover: bool = False
 
     @property
     def simplenote_queue_tags(self) -> tuple[str, ...]:
@@ -148,6 +149,7 @@ class Config:
                 1, int(raw.get("simplenote_max_notes_per_run", 2))
             ),
             simplenote_tags=simplenote_tags,
+            require_generated_cover=bool(raw.get("require_generated_cover", False)),
         )
 
     def ensure_directories(self) -> None:

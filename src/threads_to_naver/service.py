@@ -7,6 +7,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from .config import Config
+from .covers import CoverStore, cover_queue_entry, write_private_queue
 from .media import download_media
 from .models import DATED_SERIES_TITLE, ThreadPost
 from .naver import NaverDraftWriter
@@ -82,6 +83,16 @@ def run_simplenote(
     """Create drafts from pending Simplenote notes carrying a queue tag."""
     config.ensure_directories()
     effective_limit = limit or config.simplenote_max_notes_per_run
+    pending = _pending_simplenote_items(config)
+    return _create_drafts(
+        config,
+        pending[:effective_limit],
+        dry_run=dry_run,
+        dry_run_name="simplenote",
+    )
+
+
+def _pending_simplenote_items(config: Config) -> list[ThreadPost]:
     with SimplenoteMCPClient(
         config.simplenote_mcp_command,
         config.simplenote_store_path,
@@ -106,13 +117,7 @@ def run_simplenote(
         key=lambda item: (item.timestamp, item.id),
     )
     with StateStore(config.state_db) as state:
-        pending = [item for item in items if not state.contains(item.id)]
-    return _create_drafts(
-        config,
-        pending[:effective_limit],
-        dry_run=dry_run,
-        dry_run_name="simplenote",
-    )
+        return [item for item in items if not state.contains(item.id)]
 
 
 def run_daily(config: Config, *, dry_run: bool = False) -> int:
@@ -120,6 +125,32 @@ def run_daily(config: Config, *, dry_run: bool = False) -> int:
         return run_simplenote(config, dry_run=dry_run)
     target_date = datetime.now(config.timezone).date() - timedelta(days=1)
     return run(config, target_date, dry_run=dry_run)
+
+
+def prepare_cover_queue(config: Config, output: Path) -> int:
+    """Write pending Simplenote cover inputs to a private local file."""
+    if config.source != "simplenote":
+        raise RuntimeError("Cover queue currently supports the Simplenote daily source.")
+    config.ensure_directories()
+    pending = _pending_simplenote_items(config)
+    store = CoverStore(config.data_dir / "covers")
+    entries = []
+    for item in pending[: config.simplenote_max_notes_per_run]:
+        if not _cover_available(store, item):
+            entry = cover_queue_entry(item)
+            entry["title"] = item.title_for_timezone(config.timezone)
+            entries.append(entry)
+    write_private_queue(output, entries)
+    print(f"Prepared {len(entries)} cover request(s) in a private local file.")
+    return len(entries)
+
+
+def _cover_available(store: CoverStore, item: ThreadPost) -> bool:
+    try:
+        store.resolve(item)
+    except RuntimeError:
+        return False
+    return True
 
 
 def append_footer_to_temp_drafts(
@@ -290,6 +321,10 @@ def _create_drafts(
 
     with StateStore(config.state_db) as state:
         pending = [post for post in posts if not state.contains(post.id)]
+        covers = {}
+        if config.require_generated_cover:
+            store = CoverStore(config.data_dir / "covers")
+            covers = {post.id: store.resolve(post) for post in pending}
         if dry_run:
             _write_dry_run(config, dry_run_name, pending)
             print(f"Dry run: {len(pending)} pending post(s); no Naver browser opened.")
@@ -305,10 +340,10 @@ def _create_drafts(
                 title = post.title_for_timezone(config.timezone)
                 media_dir = config.artifacts_dir / "media" / post.id
                 media_paths = download_media(post, media_dir) if post.media else []
-                writer.create_draft(post, media_paths)
+                writer.create_draft(post, media_paths, cover_path=covers.get(post.id))
                 state.mark_drafted(post.id, post.permalink, post.timestamp, title)
                 created += 1
-                print(f"Drafted source item {post.id}: {title}")
+                print(f"Drafted source item {post.id}.")
         return created
 
 

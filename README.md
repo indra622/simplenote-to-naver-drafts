@@ -9,6 +9,7 @@ Simplenote 작업 노트를 네이버 블로그의 **임시저장 초안**으로
 - Simplenote에서는 설정한 태그 중 하나 이상이 붙은 노트만 큐로 읽습니다. `simplenote_tags`를 권장하며 기존 `simplenote_tag` 단일 설정도 계속 지원합니다.
 - Simplenote의 첫 줄은 제목, 나머지 줄은 본문으로 사용합니다.
 - 이미지, 캐러셀, 동영상을 함께 옮깁니다.
+- 선택적으로 각 새 글의 생성형 표지를 본문 맨 앞에 넣고 대표 이미지로 확인합니다.
 - 설정한 footer 링크와 이미지를 모든 새 초안의 맨 아래에 추가할 수 있습니다.
 - SQLite로 처리 이력을 관리해 중단 후 재개해도 중복 초안을 만들지 않습니다.
 
@@ -65,6 +66,7 @@ simplenote_store_path = "~/Library/Group Containers/PZYM8XX95Q.com.automattic.Si
 simplenote_mcp_command = "node_modules/.bin/simplenote-mcp"
 simplenote_scan_limit = 100
 simplenote_max_notes_per_run = 2
+require_generated_cover = false
 naver_write_url = "https://blog.naver.com/{blog_id}/postwrite"
 footer_url = "https://naver.me/5qLhk2hv"
 footer_image_path = "assets/brand-connect-guide.png"
@@ -128,6 +130,31 @@ uv run threads-to-naver daily
 ```
 
 `source = "simplenote"`이면 Simplenote 태그 큐를, `source = "threads"`이면 전날 Threads 게시물을 처리합니다.
+
+### 생성형 표지 준비
+
+`require_generated_cover = true`로 설정하면 새 초안마다 생성된 표지가 필요합니다. 이 옵션은 모든 새 소스 항목에 적용됩니다. `daily`와 `daily --dry-run`은 현재 소스의 정확한 제목·본문·작성 시각에 맞는 캐시 파일을 먼저 확인합니다. 표지가 없거나 손상되면 네이버를 열거나 완료 상태를 기록하지 않고 실패합니다. 원본 노트가 수정되면 이전 표지는 재사용하지 않습니다.
+
+```bash
+.venv/bin/threads-to-naver cover-queue --output artifacts/cover-queue.json
+```
+
+이 명령은 이번 일배치 대상 중 표지가 필요한 항목을 `items` 배열로 출력 파일에 기록합니다. 각 항목에 `id`, `fingerprint`, `title`, `text`가 들어 있습니다. 파일 권한은 `0600`이며 원문을 포함하므로 공유하거나 로그에 출력하지 마세요. OpenClaw 에이전트가 이 파일을 비공개로 읽고, 설정된 `openai/gpt-image-2`의 `image_generate` 도구로 **항목마다 새 이미지를 생성**해야 합니다. 이 로컬 Python/launchd 프로세스는 해당 동적 도구를 직접 호출하지 않습니다. 권장 표지: 정사각형 프리미엄 에디토리얼 이미지, 따뜻한 아이보리 종이, 짙은 잉크 블루 그림자, 절제된 코랄·틸, 촉감 있는 3D와 인쇄의 혼합, 명확한 중심 피사체, 텍스트·로고·워터마크 없음.
+
+검토한 PNG 또는 JPEG 이미지를 항목별로 설치합니다.
+
+```bash
+.venv/bin/threads-to-naver cover-install \
+  --queue artifacts/cover-queue.json \
+  --item-id 'simplenote:NOTE_ID_FROM_QUEUE' \
+  --image /private/path/to/generated-cover.jpg
+.venv/bin/threads-to-naver daily --dry-run
+.venv/bin/threads-to-naver daily
+```
+
+이미지는 `~/.local/share/threads-to-naver/covers/<SHA256(item-id)>/<fingerprint>.jpg` 또는 `.png`에 복사되고, 같은 이름의 `.json` 파일에 이미지 체크섬이 저장됩니다. `daily`는 원본과 체크섬을 재검증한 뒤 표지를 본문과 기존 미디어·footer보다 먼저 업로드합니다. 네이버의 이미지별 `대표` 버튼이 선택된 상태이며 표지가 첫 이미지인지 저장 전후에 확인합니다. 생성 실패 시 큐 항목은 다음 실행에서도 남습니다. 같은 항목을 재시도할 때는 검증된 캐시를 재사용하므로 중복 생성하지 않습니다.
+
+운영 환경에서는 OpenClaw 자동화 `simplenote-naver-drafts-ai-cover-11am`이 매일 11:00(Asia/Seoul)에 `cover-queue` → `image_generate` → `cover-install` → `daily --dry-run` → `daily`를 순서대로 실행합니다. 기존 launchd `local.threads-to-naver-drafts`는 중복 작성을 막기 위해 비활성화했습니다. 자동화 ID와 프롬프트는 OpenClaw 설정에서 관리하며 Git 저장소에는 포함하지 않습니다. 이미지 생성이 지연되면 같은 자동화 세션의 완료 이벤트에서 이어서 설치합니다. 원문과 생성 프롬프트를 예약 실행 로그에 남기지 마세요.
 
 ### 1. 먼저 dry-run
 

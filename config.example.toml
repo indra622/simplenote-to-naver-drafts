@@ -26,6 +26,10 @@ simplenote_mcp_command = "node_modules/.bin/simplenote-mcp"
 simplenote_scan_limit = 100
 simplenote_max_notes_per_run = 2
 
+# Require a separately generated, cached cover for every new source item.
+# Generate/install covers with the cover-queue and cover-install commands below.
+require_generated_cover = false
+
 # Used only when naver_blog_id is set.
 naver_write_url = "https://blog.naver.com/{blog_id}/postwrite"
 

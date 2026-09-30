@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import date, timedelta
 from pathlib import Path
 
 from .config import Config
+from .covers import CoverStore
 from .naver import NaverDraftWriter
 from .secrets import setup_threads_token
 from .service import (
     append_footer_to_temp_drafts,
     backfill,
+    prepare_cover_queue,
     retitle_dated_series_temp_drafts,
     run,
     run_daily,
@@ -37,6 +40,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Read the configured source without opening Naver",
     )
+
+    queue_parser = subparsers.add_parser(
+        "cover-queue", help="Write pending cover inputs to a private local JSON file"
+    )
+    queue_parser.add_argument("--output", type=Path, required=True)
+    install_parser = subparsers.add_parser(
+        "cover-install", help="Validate and cache a generated cover for one queue item"
+    )
+    install_parser.add_argument("--queue", type=Path, required=True)
+    install_parser.add_argument("--item-id", required=True)
+    install_parser.add_argument("--image", type=Path, required=True)
 
     simplenote_parser = subparsers.add_parser(
         "simplenote-run",
@@ -134,6 +148,24 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "daily":
             count = run_daily(config, dry_run=args.dry_run)
             print(f"Completed: {count} item(s).")
+            return 0
+
+        if args.command == "cover-queue":
+            prepare_cover_queue(config, args.output)
+            return 0
+
+        if args.command == "cover-install":
+            queue = json.loads(args.queue.read_text(encoding="utf-8"))
+            matches = [
+                item for item in queue["items"] if item["id"] == args.item_id
+            ]
+            if len(matches) != 1:
+                raise ValueError("Item ID must match one cover queue entry.")
+            item = matches[0]
+            destination = CoverStore(config.data_dir / "covers").install(
+                item["id"], item["fingerprint"], args.image
+            )
+            print(f"Installed generated cover in private cache: {destination}")
             return 0
 
         if args.command == "simplenote-run":
