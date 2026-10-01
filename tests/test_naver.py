@@ -463,6 +463,7 @@ def test_create_draft_normalizes_only_boundary_newlines(
         monkeypatch.setattr(writer, "_prepare_editor", lambda: page)
         monkeypatch.setattr(writer, "_save_artifact", lambda *args: None)
         monkeypatch.setattr(page, "wait_for_timeout", lambda ms: None)
+        monkeypatch.setattr(naver, "_select_draft_category", lambda page: None)
         monkeypatch.setattr(
             naver, "_insert_verbatim", lambda page, text: _insert_verbatim(page, inserted)
         )
@@ -492,6 +493,7 @@ def test_create_draft_accepts_naver_paragraph_boundaries(config, monkeypatch):
         monkeypatch.setattr(writer, "_prepare_editor", lambda: page)
         monkeypatch.setattr(writer, "_save_artifact", lambda *args: None)
         monkeypatch.setattr(page, "wait_for_timeout", lambda ms: None)
+        monkeypatch.setattr(naver, "_select_draft_category", lambda page: None)
         monkeypatch.setattr(
             naver,
             "_insert_verbatim",
@@ -511,6 +513,85 @@ def test_create_draft_accepts_naver_paragraph_boundaries(config, monkeypatch):
 
         assert page.evaluate("Boolean(window.saved)") is True
         assert _editor_text_body_text(page) == post.text
+        browser.close()
+
+
+def _category_editor_html(
+    *, target_present=True, update_label=True, check_radio=True
+):
+    click_actions = []
+    if update_label:
+        click_actions.append("document.querySelector('#selected').textContent=this.innerText")
+        click_actions.append("document.querySelector('#menu').hidden=true")
+    if not check_radio:
+        click_actions.append("event.preventDefault()")
+    on_click = f' onclick="{";".join(click_actions)}"' if click_actions else ""
+    target = (
+        '<li><input id="target" type="radio" name="category">'
+        f'<label for="target" role="button"{on_click}>'
+        '직접 쓰는 AI교양</label></li>'
+        if target_present else ""
+    )
+    return (
+        '<div class="se-documentTitle" contenteditable="true"></div>'
+        '<div class="se-section-text" contenteditable="true">'
+        '<p class="se-text-paragraph"><br></p></div>'
+        '<button style="position:fixed;top:0" '
+        'onclick="window.saved=true;window.panelOpenAtSave='
+        '!document.querySelector(\'#panel\').hidden">저장</button>'
+        '<button data-click-area="tpb.publish" '
+        'onclick="document.querySelector(\'#panel\').hidden=false">발행</button>'
+        '<div id="panel" hidden><button aria-label="카테고리 목록 버튼" '
+        'onclick="document.querySelector(\'#menu\').hidden=false">'
+        '<span id="selected">일기</span></button>'
+        '<div id="menu" role="menu" hidden>'
+        '<li><input id="default" type="radio" name="category" checked>'
+        '<label for="default" role="button">일기</label></li>'
+        '<li><input id="other" type="radio" name="category">'
+        '<label for="other" role="button">AI</label></li>'
+        f'{target}</div></div>'
+    )
+
+
+@pytest.mark.parametrize(
+    "target_present, update_label, check_radio, should_save",
+    [
+        (True, True, True, True),
+        (False, True, True, False),
+        (True, False, True, False),
+        (True, True, False, False),
+    ],
+)
+def test_new_draft_requires_confirmed_target_category(
+    config, monkeypatch, target_present, update_label, check_radio, should_save
+):
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            _category_editor_html(
+                target_present=target_present,
+                update_label=update_label,
+                check_radio=check_radio,
+            )
+        )
+        writer = NaverDraftWriter(config)
+        monkeypatch.setattr(writer, "_prepare_editor", lambda: page)
+        monkeypatch.setattr(writer, "_save_artifact", lambda *args: None)
+        monkeypatch.setattr(page, "wait_for_timeout", lambda ms: None)
+        post = ThreadPost("test", "body", datetime.now(UTC), "", "TEXT_POST")
+
+        if should_save:
+            writer.create_draft(post, [])
+        else:
+            with pytest.raises(RuntimeError, match="category"):
+                writer.create_draft(post, [])
+
+        assert page.evaluate("Boolean(window.saved)") is should_save
+        if should_save:
+            assert page.evaluate("window.panelOpenAtSave") is True
+        if target_present:
+            assert page.locator("#target").is_checked() is check_radio
         browser.close()
 
 

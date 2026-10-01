@@ -76,6 +76,7 @@ footer_image_path = "assets/brand-connect-guide.png"
 footer를 바꾸려면 `footer_url`과 `footer_image_path`를 수정하세요. 두 값을 모두 비우면 footer를 추가하지 않습니다.
 
 일배치 소스를 Simplenote로 바꾸려면 `source = "simplenote"`로 설정하세요. `simplenote_max_notes_per_run = 2`는 한 번에 공개하는 글 수가 아니라, 하루에 만들어 둘 **임시저장 초안 수**의 상한입니다.
+새로 만드는 네이버 임시저장 글은 발행 설정의 `직접 쓰는 AI교양` 카테고리를 선택하고 선택 상태를 확인한 뒤 저장합니다. 카테고리를 찾거나 확인할 수 없으면 저장을 중단합니다. 기존 임시저장 글은 변경하지 않습니다.
 과거 노트를 제외하려면 `simplenote_start_date = "2026-09-21"`처럼 기준일을 설정하세요. 설정한 시간대의 해당 날짜 00:00 이후 생성된 노트만 처리하며, 이전 노트는 나중에 태그를 붙여도 제외합니다.
 
 ### Simplenote 공급자 선택

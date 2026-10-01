@@ -147,6 +147,9 @@ def test_new_draft_uploads_cover_before_body_and_verifies_before_save(
         monkeypatch.setattr(writer, "_prepare_editor", lambda: page)
         monkeypatch.setattr(writer, "_save_artifact", lambda *args: None)
         monkeypatch.setattr(page, "wait_for_timeout", lambda _ms: None)
+        monkeypatch.setattr(
+            "threads_to_naver.naver._select_draft_category", lambda page: None
+        )
 
         def upload(_page, paths, _title):
             assert paths == [image]

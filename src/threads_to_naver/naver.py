@@ -54,6 +54,7 @@ VIDEO_BUTTON_SELECTORS = (
 )
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm"}
 SAFE_DRAFT_COUNT_LIMIT = 98
+NEW_DRAFT_CATEGORY = "직접 쓰는 AI교양"
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,7 @@ class NaverDraftWriter:
         if cover_path is not None:
             _verify_cover(page, cover_path, select_representative=True)
 
+        _select_draft_category(page)
         draft_button = _find_safe_draft_button(page)
         draft_button.click()
         page.wait_for_timeout(5_000)
@@ -588,6 +590,46 @@ def _find_safe_draft_button(page: Page) -> Locator:
     raise RuntimeError(
         "Could not identify a safe Naver temporary-save control. "
         "No publish control was clicked."
+    )
+
+
+def _select_draft_category(page: Page) -> None:
+    for frame in _candidate_frames(page):
+        opener = frame.locator('button[data-click-area="tpb.publish"]')
+        if opener.count() != 1 or not opener.is_visible():
+            continue
+        if " ".join(opener.inner_text().split()) != "발행":
+            break
+        opener.click()
+        toggle = frame.get_by_role("button", name="카테고리 목록 버튼", exact=True)
+        if toggle.count() != 1 or not toggle.is_visible():
+            break
+        toggle.click()
+        menu = toggle.locator("xpath=..").get_by_role("menu")
+        if menu.count() != 1 or not menu.is_visible():
+            break
+        option = menu.get_by_role("button", name=NEW_DRAFT_CATEGORY, exact=True)
+        if option.count() != 1 or not option.is_visible():
+            break
+        option.click()
+        if " ".join(toggle.inner_text().split()) != NEW_DRAFT_CATEGORY:
+            break
+        toggle.click()
+        menu = toggle.locator("xpath=..").get_by_role("menu")
+        if menu.count() != 1 or not menu.is_visible():
+            break
+        option = menu.get_by_role("button", name=NEW_DRAFT_CATEGORY, exact=True)
+        if option.count() != 1 or not option.evaluate(
+            "el => el instanceof HTMLLabelElement && "
+            "el.control instanceof HTMLInputElement && "
+            "el.control.type === 'radio' && el.control.checked"
+        ):
+            break
+        toggle.click()
+        return
+    raise RuntimeError(
+        f"Could not confirm Naver category {NEW_DRAFT_CATEGORY!r}; "
+        "no draft was saved."
     )
 
 
