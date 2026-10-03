@@ -542,7 +542,7 @@ def _category_editor_html(
         '<button data-click-area="tpb.publish" '
         'onclick="document.querySelector(\'#panel\').hidden=false">발행</button>'
         '<div id="panel" hidden><button aria-label="카테고리 목록 버튼" '
-        'onclick="document.querySelector(\'#menu\').hidden=false">'
+        'onclick="const menu=document.querySelector(\'#menu\');menu.hidden=!menu.hidden">'
         '<span id="selected">일기</span></button>'
         '<div id="menu" role="menu" hidden>'
         '<li><input id="default" type="radio" name="category" checked>'
@@ -592,6 +592,74 @@ def test_new_draft_requires_confirmed_target_category(
             assert page.evaluate("window.panelOpenAtSave") is True
         if target_present:
             assert page.locator("#target").is_checked() is check_radio
+        browser.close()
+
+
+@pytest.mark.parametrize("delayed_step", ["panel", "menu", "selection", "radio"])
+def test_category_waits_for_populated_editor_transitions(delayed_step):
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(_category_editor_html())
+        page.locator(".se-documentTitle").fill("Unsaved synthetic title")
+        page.locator(".se-section-text").fill("Synthetic body\n" * 25)
+        page.evaluate(
+            """step => {
+              const panel = document.querySelector('#panel');
+              const menu = document.querySelector('#menu');
+              const toggle = document.querySelector('[aria-label="카테고리 목록 버튼"]');
+              if (step === 'panel') {
+                document.querySelector('[data-click-area="tpb.publish"]').onclick =
+                  () => setTimeout(() => panel.hidden = false, 150);
+              } else if (step === 'menu') {
+                toggle.onclick = () => setTimeout(() => menu.hidden = !menu.hidden, 150);
+              } else {
+                document.querySelector('label[for="target"]').onclick = event => {
+                  event.preventDefault();
+                  const select = () => {
+                    document.querySelector('#selected').textContent = '직접 쓰는 AI교양';
+                    menu.hidden = true;
+                  };
+                  const check = () => document.querySelector('#target').checked = true;
+                  if (step === 'selection') setTimeout(() => { select(); check(); }, 150);
+                  else { select(); setTimeout(check, 250); }
+                };
+              }
+            }""",
+            delayed_step,
+        )
+
+        naver._select_draft_category(page)
+
+        assert page.locator("#target").is_checked()
+        assert page.locator("#selected").inner_text() == naver.NEW_DRAFT_CATEGORY
+        assert not page.evaluate("Boolean(window.saved)")
+        browser.close()
+
+
+@pytest.mark.parametrize("problem", ["duplicate", "non-radio", "unassociated"])
+def test_ambiguous_category_controls_never_save(config, monkeypatch, problem):
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(_category_editor_html())
+        page.evaluate(
+            """problem => {
+              const label = document.querySelector('label[for="target"]');
+              if (problem === 'duplicate') label.after(label.cloneNode(true));
+              else if (problem === 'non-radio') document.querySelector('#target').type = 'checkbox';
+              else label.removeAttribute('for');
+            }""",
+            problem,
+        )
+        writer = NaverDraftWriter(config)
+        monkeypatch.setattr(writer, "_prepare_editor", lambda: page)
+        post = ThreadPost("test", "body", datetime.now(UTC), "", "TEXT_POST")
+
+        with pytest.raises(RuntimeError, match="category.*at (target option|selected radio)"):
+            writer.create_draft(post, [])
+
+        assert not page.evaluate("Boolean(window.saved)")
         browser.close()
 
 

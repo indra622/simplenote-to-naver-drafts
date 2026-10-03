@@ -155,7 +155,39 @@ uv run threads-to-naver daily
 
 이미지는 `~/.local/share/threads-to-naver/covers/<SHA256(item-id)>/<fingerprint>.jpg` 또는 `.png`에 복사되고, 같은 이름의 `.json` 파일에 이미지 체크섬이 저장됩니다. `daily`는 원본과 체크섬을 재검증한 뒤 표지를 본문과 기존 미디어·footer보다 먼저 업로드합니다. 네이버의 이미지별 `대표` 버튼이 선택된 상태이며 표지가 첫 이미지인지 저장 전후에 확인합니다. 생성 실패 시 큐 항목은 다음 실행에서도 남습니다. 같은 항목을 재시도할 때는 검증된 캐시를 재사용하므로 중복 생성하지 않습니다.
 
-운영 환경에서는 OpenClaw 자동화 `simplenote-naver-drafts-ai-cover-11am`이 매일 11:00(Asia/Seoul)에 `cover-queue` → `image_generate` → `cover-install` → `daily --dry-run` → `daily`를 순서대로 실행합니다. 기존 launchd `local.threads-to-naver-drafts`는 중복 작성을 막기 위해 비활성화했습니다. 자동화 ID와 프롬프트는 OpenClaw 설정에서 관리하며 Git 저장소에는 포함하지 않습니다. 이미지 생성이 지연되면 같은 자동화 세션의 완료 이벤트에서 이어서 설치합니다. 원문과 생성 프롬프트를 예약 실행 로그에 남기지 마세요.
+OpenClaw 자동화 `simplenote-naver-drafts-ai-cover-11am`과 기존 launchd `local.threads-to-naver-drafts`의 활성 상태는 운영자가 관리합니다. 자동화 ID와 프롬프트는 Git 저장소에 포함하지 않습니다. 이미지 생성 도구가 background 작업을 반환하면 모델 턴의 성공이나 종료만으로 표지 설치·초안 저장 완료를 판단할 수 없습니다. 원문과 생성 프롬프트를 예약 실행 로그에 남기지 마세요.
+
+### 완료 이미지 재확인과 별도 후속 실행
+
+`scripts/reconcile_covers.py`는 모델 세션의 완료 이벤트 없이도 현재 일배치의 완료 이미지를 확인합니다. 기본 실행은 검증만 하고 표지를 설치하거나 네이버를 열지 않습니다. 큐의 전체 fingerprint가 현재 원본과 일치하는지 확인하고, 지정한 이미지 디렉터리 바로 아래의 `naver-<fingerprint 앞 32자>---<UUID>.jpg` 또는 `.png`만 인정합니다. 이미지가 없거나 두 개 이상이면 실패합니다. 심볼릭 링크·형식 불일치·수정된 원본·fingerprint 접두사 충돌도 거부합니다. 설치에는 `cover-install`과 같은 `CoverStore.install` 및 체크섬 검증을 사용합니다.
+
+이미지 생성 요청은 `count: 1`, `filename: "naver-<fingerprint 앞 32자>"`를 사용하세요. OpenClaw의 미디어 저장소는 요청 파일명을 60자로 줄이고 UUID와 확장자를 덧붙이므로 전체 64자 fingerprint를 파일명에 넣으면 잘립니다. 이전 12자 파일명은 검토한 큐에 한해서 `--fingerprint-chars 12`를 명시해야 인식합니다. 큐와 이미지 디렉터리는 비공개 로컬 경로로 지정하세요.
+
+```bash
+# 검증만 실행합니다. 실제 경로는 운영자가 지정합니다.
+.venv/bin/python scripts/reconcile_covers.py \
+  --queue /private/path/to/cover-queue.json \
+  --image-dir "$HOME/.openclaw/media/tool-image-generation"
+
+# 검토 후 표지만 설치합니다. 네이버를 열지 않습니다.
+.venv/bin/python scripts/reconcile_covers.py \
+  --queue /private/path/to/cover-queue.json \
+  --image-dir "$HOME/.openclaw/media/tool-image-generation" --apply
+
+# 아래 명령은 새 비공개 초안을 실제로 저장하므로 운영자 검토 후에만 활성화합니다.
+.venv/bin/python scripts/reconcile_covers.py \
+  --queue /private/path/to/cover-queue.json \
+  --image-dir "$HOME/.openclaw/media/tool-image-generation" --apply --save-drafts
+```
+
+`--save-drafts`는 검증한 현재 일배치에만 dry-run과 실제 저장을 순서대로 실행합니다. 완료된 소스는 기존 상태 DB로 제외하며 기존 초안을 열거나 수정하지 않습니다. 같은 스크립트의 중복 실행은 파일 잠금으로 막습니다. 저장 직전에는 원문 없는 `0600` 파일 `~/.local/share/threads-to-naver/reconciliation-attempt.json`을 남기고, 모든 저장과 로컬 완료 기록이 끝난 뒤 삭제합니다. 실패나 중단으로 이 파일이 남으면 이후 자동 저장은 거부합니다. 네이버 저장과 로컬 DB 기록 사이에 프로세스가 중단되면 중복 여부를 자동으로 증명할 수 없기 때문입니다. 이 경우 운영자가 네이버와 DB를 대조한 뒤에만 marker를 해제하세요. 표지 누락·중복 등 저장 전 검증 실패는 다음 예약 실행에서 다시 검증할 수 있습니다.
+
+권장 예약 조건은 다음과 같습니다. 이 저장소는 예약 작업을 자동 등록하거나 수정하지 않습니다.
+
+- 11:00 작업은 비공개 큐 스냅샷과 이미지 생성만 담당합니다. 기존 큐는 후속 실행이 처리할 때까지 보존하고, 진행 중인 이미지 요청을 재생성하지 않습니다.
+- 별도 11:10·11:20 작업은 위 `--apply --save-drafts` 명령을 같은 큐 경로로 실행합니다. launchd 등에서 직접 실행하고 프로세스 종료 코드로 성공·실패를 확인하는 방식을 권장합니다. 이미지가 아직 없으면 종료 코드 1을 알리고 다음 실행에서 다시 확인합니다.
+- 이 후속 스크립트만 초안 저장을 담당하도록 기존 `daily` 예약 실행과 모델의 완료 콜백에서 수행하는 `daily`를 비활성화해야 합니다. 파일 잠금은 일반 `daily` 명령까지 보호하지 않으므로 수동 catch-up도 동시에 실행하지 마세요.
+- 작업 로그는 `umask 077`과 비공개 디렉터리로 보호하고, 큐·본문·프롬프트를 출력하지 않습니다. background acknowledgment나 `NO_REPLY`를 초안 저장 성공으로 간주하지 않습니다.
 
 ### 1. 먼저 dry-run
 

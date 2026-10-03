@@ -14,6 +14,7 @@ from playwright.sync_api import (
     Frame,
     Locator,
     Page,
+    expect,
     sync_playwright,
 )
 from playwright.sync_api import (
@@ -594,43 +595,59 @@ def _find_safe_draft_button(page: Page) -> Locator:
 
 
 def _select_draft_category(page: Page) -> None:
+    stage = "settings opener"
     for frame in _candidate_frames(page):
         opener = frame.locator('button[data-click-area="tpb.publish"]')
         if opener.count() != 1 or not opener.is_visible():
             continue
         if " ".join(opener.inner_text().split()) != "발행":
             break
-        opener.click()
-        toggle = frame.get_by_role("button", name="카테고리 목록 버튼", exact=True)
-        if toggle.count() != 1 or not toggle.is_visible():
+        try:
+            # The settings panel mounts asynchronously after a populated editor click.
+            opener.click(timeout=5_000)
+            stage = "category toggle"
+            toggle = frame.get_by_role("button", name="카테고리 목록 버튼", exact=True)
+            expect(toggle).to_have_count(1, timeout=5_000)
+            expect(toggle).to_be_visible(timeout=5_000)
+            toggle.click(timeout=5_000)
+            stage = "category menu"
+            menu = toggle.locator("xpath=..").get_by_role("menu")
+            expect(menu).to_have_count(1, timeout=5_000)
+            expect(menu).to_be_visible(timeout=5_000)
+            stage = "target option"
+            option = menu.get_by_role("button", name=NEW_DRAFT_CATEGORY, exact=True)
+            expect(option).to_have_count(1, timeout=5_000)
+            expect(option).to_be_visible(timeout=5_000)
+            option.click(timeout=5_000)
+            stage = "selected label"
+            expect(toggle).to_have_text(
+                NEW_DRAFT_CATEGORY, use_inner_text=True, timeout=5_000
+            )
+            expect(menu).to_be_hidden(timeout=5_000)
+            toggle.click(timeout=5_000)
+            stage = "selected radio"
+            expect(menu).to_be_visible(timeout=5_000)
+            expect(option).to_have_count(1, timeout=5_000)
+            expect(option).to_be_visible(timeout=5_000)
+            frame.wait_for_function(
+                "el => el.isConnected && el instanceof HTMLLabelElement && "
+                "el.control instanceof HTMLInputElement && "
+                "el.control.type === 'radio' && el.control.checked",
+                arg=option.element_handle(timeout=5_000),
+                timeout=5_000,
+            )
+            toggle.click(timeout=5_000)
+            expect(menu).to_be_hidden(timeout=5_000)
+            expect(toggle).to_have_text(
+                NEW_DRAFT_CATEGORY, use_inner_text=True, timeout=5_000
+            )
+            return
+        except (AssertionError, PlaywrightTimeoutError):
             break
-        toggle.click()
-        menu = toggle.locator("xpath=..").get_by_role("menu")
-        if menu.count() != 1 or not menu.is_visible():
-            break
-        option = menu.get_by_role("button", name=NEW_DRAFT_CATEGORY, exact=True)
-        if option.count() != 1 or not option.is_visible():
-            break
-        option.click()
-        if " ".join(toggle.inner_text().split()) != NEW_DRAFT_CATEGORY:
-            break
-        toggle.click()
-        menu = toggle.locator("xpath=..").get_by_role("menu")
-        if menu.count() != 1 or not menu.is_visible():
-            break
-        option = menu.get_by_role("button", name=NEW_DRAFT_CATEGORY, exact=True)
-        if option.count() != 1 or not option.evaluate(
-            "el => el instanceof HTMLLabelElement && "
-            "el.control instanceof HTMLInputElement && "
-            "el.control.type === 'radio' && el.control.checked"
-        ):
-            break
-        toggle.click()
-        return
     raise RuntimeError(
-        f"Could not confirm Naver category {NEW_DRAFT_CATEGORY!r}; "
+        f"Could not confirm Naver category {NEW_DRAFT_CATEGORY!r} at {stage}; "
         "no draft was saved."
-    )
+    ) from None
 
 
 def _dismiss_restore_popup(page: Page) -> bool:
